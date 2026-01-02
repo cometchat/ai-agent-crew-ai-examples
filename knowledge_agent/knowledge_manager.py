@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from crewai import Agent, Crew, Process, Task
-from crewai_tools import tool
+from crewai.tools import tool
 from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings

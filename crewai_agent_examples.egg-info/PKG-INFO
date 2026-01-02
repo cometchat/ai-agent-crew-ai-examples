@@ -1,0 +1,23 @@
+Metadata-Version: 2.4
+Name: crewai-agent-examples
+Version: 0.1.0
+Summary: CrewAI-based knowledge and Product Hunt agents with FastAPI
+Requires-Python: >=3.10
+Requires-Dist: crewai>=0.51.0
+Requires-Dist: crewai-tools>=0.3.0
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn[standard]>=0.30.6
+Requires-Dist: python-multipart>=0.0.9
+Requires-Dist: pydantic-settings>=2.6.1
+Requires-Dist: chromadb>=0.5.5
+Requires-Dist: langchain-openai>=0.2.3
+Requires-Dist: langchain-community>=0.2.12
+Requires-Dist: langchain-text-splitters>=0.2.2
+Requires-Dist: httpx>=0.28.1
+Requires-Dist: pendulum>=3.0.0
+Requires-Dist: pypdf>=5.1.0
+Requires-Dist: aiofiles>=24.1.0
+Provides-Extra: dev
+Requires-Dist: ipykernel>=6.29.0; extra == "dev"
+Requires-Dist: pytest>=8.3.3; extra == "dev"
+Requires-Dist: httpx>=0.28.1; extra == "dev"

@@ -4,7 +4,7 @@ import asyncio
 from typing import Any, Dict, List, Optional
 
 from crewai import Agent, Crew, Process, Task
-from crewai_tools import tool
+from crewai.tools import tool
 from langchain_openai import ChatOpenAI
 
 from .config import ProductHuntSettings
