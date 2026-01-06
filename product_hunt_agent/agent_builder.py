@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 from crewai import Agent, Crew, Process, Task
 from crewai.tools import tool
@@ -44,6 +44,7 @@ def create_product_hunt_crew(settings: ProductHuntSettings) -> Crew:
 
     @tool("getTopProducts")
     def tool_get_top_products(limit: int = 3) -> Dict[str, Any]:
+        """Get top Product Hunt products sorted by vote count. Use this for all-time top products."""
         safe_limit = _clamp(limit, 1, 10, 3)
         posts = asyncio.run(get_top_products_by_votes(safe_limit, settings))
         return {
@@ -54,6 +55,7 @@ def create_product_hunt_crew(settings: ProductHuntSettings) -> Crew:
 
     @tool("getTopProductsThisWeek")
     def tool_get_top_products_this_week(limit: int = 3, days: int = 7) -> Dict[str, Any]:
+        """Get top Product Hunt products from a rolling time window. Use for recent launches like 'this week' or 'last few days'."""
         safe_limit = _clamp(limit, 1, 10, 3)
         safe_days = _clamp(days, 1, 31, 7)
         posts = asyncio.run(get_top_products_this_week(safe_limit, safe_days, settings))
@@ -67,10 +69,11 @@ def create_product_hunt_crew(settings: ProductHuntSettings) -> Crew:
 
     @tool("getTopProductsByTimeframe")
     def tool_get_top_products_by_timeframe(
-        timeframe: Optional[str] = None,
-        tz: Optional[str] = None,
+        timeframe: str | None = None,
+        tz: str | None = None,
         limit: int = 3,
     ) -> Dict[str, Any]:
+        """Get top Product Hunt products for a specific timeframe like 'today', 'yesterday', 'last_week', or 'last_month'."""
         safe_limit = _clamp(limit, 1, 10, 3)
         posts = asyncio.run(
             get_top_products_by_timeframe(
@@ -92,6 +95,7 @@ def create_product_hunt_crew(settings: ProductHuntSettings) -> Crew:
 
     @tool("searchProducts")
     def tool_search_products(query: str, limit: int = 10) -> Dict[str, Any]:
+        """Search Product Hunt for products matching a keyword or phrase."""
         safe_limit = _clamp(limit, 1, 50, 10)
         hits = asyncio.run(search_products(query, limit=safe_limit, settings=settings))
         return {
@@ -102,16 +106,17 @@ def create_product_hunt_crew(settings: ProductHuntSettings) -> Crew:
 
     @tool("triggerConfetti")
     def tool_trigger_confetti(
-        reason: Optional[str] = None,
-        colors: Optional[List[str]] = None,
+        reason: str | None = None,
+        colors: list[str] | None = None,
         particle_count: int = 200,
         spread: int = 90,
         start_velocity: int = 45,
-        origin: Optional[Dict[str, float]] = None,
-        shapes: Optional[List[str]] = None,
+        origin: dict[str, float] | None = None,
+        shapes: list[str] | None = None,
         ticks: int = 200,
         disable_sound: bool = True,
     ) -> Dict[str, Any]:
+        """Trigger a confetti celebration animation. Use to celebrate achievements or milestones."""
         payload: Dict[str, Any] = {
             "reason": reason,
             "colors": colors or ["#ff577f", "#ff884b", "#ffd384", "#fff9b0", "#00c2ff", "#7b5cff"],

@@ -21,7 +21,8 @@ dependencies = [
     "httpx>=0.28.1",
     "pendulum>=3.0.0",
     "pypdf>=5.1.0",
-    "aiofiles>=24.1.0"
+    "aiofiles>=24.1.0",
+    "python-dotenv>=1.0.1"
 ]
 
 [project.optional-dependencies]

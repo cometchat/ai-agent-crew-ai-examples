@@ -2,8 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Dict, List, Optional
 from uuid import uuid4
+
+from dotenv import load_dotenv
+
+# Load .env before any other imports that might need env vars
+_env_path = Path(__file__).resolve().parent / ".env"
+load_dotenv(_env_path)
+load_dotenv()  # Also try .env in cwd
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware

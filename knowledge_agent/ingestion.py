@@ -18,7 +18,7 @@ from .config import KnowledgeAgentSettings
 
 URL_PATTERN = re.compile(r"^https?://", re.IGNORECASE)
 MAX_UPLOAD_BYTES = 6 * 1024 * 1024
-MAX_TEXT_CHARS = 200_000
+MAX_TEXT_CHARS = 500_000  # Increased from 200,000 to handle larger docs
 MAX_SOURCES = 30
 
 

@@ -337,6 +337,15 @@ class KnowledgeManager:
 
         @tool("search_knowledge_base")
         def _search_tool(query: str, max_results: int = 4) -> str:
+            """Search the knowledge base for relevant documents matching the query.
+
+            Args:
+                query: The search query to find relevant documents.
+                max_results: Maximum number of results to return (default: 4).
+
+            Returns:
+                JSON string containing matching documents with title, content, hash, and relevance score.
+            """
             loop = manager._loop
             try:
                 if loop and loop.is_running():

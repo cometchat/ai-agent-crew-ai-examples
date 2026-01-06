@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
+
+from dotenv import load_dotenv
+
+# Load .env file from knowledge_agent directory
+_env_path = Path(__file__).parent / ".env"
+load_dotenv(_env_path)
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
