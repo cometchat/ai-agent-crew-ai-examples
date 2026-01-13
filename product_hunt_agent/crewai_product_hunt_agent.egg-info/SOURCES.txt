@@ -1,0 +1,6 @@
+pyproject.toml
+crewai_product_hunt_agent.egg-info/PKG-INFO
+crewai_product_hunt_agent.egg-info/SOURCES.txt
+crewai_product_hunt_agent.egg-info/dependency_links.txt
+crewai_product_hunt_agent.egg-info/requires.txt
+crewai_product_hunt_agent.egg-info/top_level.txt
