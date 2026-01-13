@@ -155,6 +155,14 @@ def create_app() -> FastAPI:
         run_id = request.run_id or f"run_{uuid4().hex[:8]}"
 
         async def event_generator():
+            message_id = f"msg_{uuid4().hex[:8]}"
+
+            # AG-UI style kickoff marker
+            yield (
+                json.dumps({"type": "text_start", "message_id": message_id, "thread_id": thread_id, "run_id": run_id})
+                + "\n"
+            ).encode("utf-8")
+
             try:
                 crew = create_product_hunt_crew(cfg)
                 conversation = _format_conversation(request.messages)
@@ -168,19 +176,25 @@ def create_app() -> FastAPI:
 
                 streamed = False
                 for chunk in _chunk_text(content, size=320):
-                    payload = {"type": "text_delta", "content": chunk, "thread_id": thread_id, "run_id": run_id}
+                    payload = {
+                        "type": "text_delta",
+                        "message_id": message_id,
+                        "content": chunk,
+                        "thread_id": thread_id,
+                        "run_id": run_id,
+                    }
                     yield (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
                     streamed = True
-                if streamed:
-                    yield (
-                        json.dumps({"type": "text_done", "thread_id": thread_id, "run_id": run_id}, ensure_ascii=False)
-                        + "\n"
-                    ).encode("utf-8")
+                yield (
+                    json.dumps({"type": "text_end", "message_id": message_id, "thread_id": thread_id, "run_id": run_id})
+                    + "\n"
+                ).encode("utf-8")
                 yield (json.dumps({"type": "done", "thread_id": thread_id, "run_id": run_id}) + "\n").encode("utf-8")
             except Exception as exc:
                 error_payload = {
                     "type": "error",
                     "message": str(exc),
+                    "message_id": message_id,
                     "thread_id": thread_id,
                     "run_id": run_id,
                 }
