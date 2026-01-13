@@ -143,6 +143,77 @@ def create_app() -> FastAPI:
         )
         return {"content": _stringify_result(result)}
 
+    @app.post("/kickoff")
+    async def kickoff_endpoint(
+        request: AgentStreamRequest,
+        cfg: ProductHuntSettings = Depends(settings_dependency),
+    ):
+        if not request.messages:
+            raise HTTPException(status_code=400, detail="Provide a non-empty array of messages.")
+
+        thread_id = request.thread_id
+        run_id = request.run_id
+
+        async def ndjson_generator():
+            message_id = f"msg_{uuid4().hex[:8]}"
+            try:
+                yield (
+                    json.dumps(
+                        {"type": "text_start", "message_id": message_id, "thread_id": thread_id, "run_id": run_id},
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                ).encode("utf-8")
+
+                crew = create_product_hunt_crew(cfg)
+                conversation = _format_conversation(request.messages)
+                latest = request.messages[-1].content
+
+                result = await asyncio.to_thread(
+                    crew.kickoff,
+                    inputs={"conversation": conversation, "question": latest},
+                )
+                content = _stringify_result(result).strip()
+
+                for chunk in _chunk_text(content, size=320):
+                    yield (
+                        json.dumps(
+                            {
+                                "type": "text_delta",
+                                "message_id": message_id,
+                                "thread_id": thread_id,
+                                "run_id": run_id,
+                                "content": chunk,
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    ).encode("utf-8")
+
+                yield (
+                    json.dumps(
+                        {"type": "text_end", "message_id": message_id, "thread_id": thread_id, "run_id": run_id},
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                ).encode("utf-8")
+                yield (json.dumps({"type": "done", "thread_id": thread_id, "run_id": run_id}) + "\n").encode("utf-8")
+            except Exception as exc:
+                error_payload = {
+                    "type": "error",
+                    "message": str(exc),
+                    "thread_id": thread_id,
+                    "run_id": run_id,
+                    "message_id": message_id,
+                }
+                yield (json.dumps(error_payload, ensure_ascii=False) + "\n").encode("utf-8")
+
+        return StreamingResponse(
+            ndjson_generator(),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+
     @app.post("/stream")
     async def agent_stream(
         request: AgentStreamRequest,
