@@ -74,6 +74,10 @@ curl -N http://localhost:8000/stream \
       }'
 ```
 
+Streaming format (AG-UI compatible):
+- `text_start` (first) -> `text_delta` chunks -> `text_end` -> `done`
+- Payloads include `message_id`, `thread_id`, `run_id`, and `content` for deltas.
+
 ## Product Hunt Agent
 
 ```bash
@@ -97,6 +101,8 @@ curl -N http://localhost:8001/stream \
         ]
       }'
 ```
+
+Streaming format matches the knowledge agent (`text_start` -> `text_delta` -> `text_end` -> `done` with message/run/thread IDs).
 
 ## CometChat Notes
 
