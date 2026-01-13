@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import List, Literal, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 
 class MessagePayload(BaseModel):
@@ -17,8 +17,6 @@ class ChatRequest(BaseModel):
 
 
 class AgentStreamRequest(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    thread_id: str = Field(default_factory=lambda: f"thread_{uuid4().hex[:8]}", alias="threadId")
-    run_id: str = Field(default_factory=lambda: f"run_{uuid4().hex[:8]}", alias="runId")
+    thread_id: str = Field(default_factory=lambda: f"thread_{uuid4().hex[:8]}")
+    run_id: str = Field(default_factory=lambda: f"run_{uuid4().hex[:8]}")
     messages: List[MessagePayload]
