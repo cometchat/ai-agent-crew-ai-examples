@@ -3,9 +3,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Dict
 
-from crewai import Agent, Crew, Process, Task
+from crewai import Agent, Crew, LLM, Process, Task
 from crewai.tools import tool
-from langchain_openai import ChatOpenAI
 
 from .config import ProductHuntSettings
 from .services import (
@@ -35,12 +34,7 @@ def build_system_prompt(settings: ProductHuntSettings) -> str:
 
 
 def create_product_hunt_crew(settings: ProductHuntSettings) -> Crew:
-    model = ChatOpenAI(
-        model=settings.openai_model,
-        api_key=settings.openai_api_key,
-        base_url=settings.base_url,
-        temperature=0.6,
-    )
+    model = LLM(model=settings.openai_model, api_key=settings.openai_api_key, base_url=settings.base_url, temperature=0.6)
 
     @tool("getTopProducts")
     def tool_get_top_products(limit: int = 3) -> Dict[str, Any]:
