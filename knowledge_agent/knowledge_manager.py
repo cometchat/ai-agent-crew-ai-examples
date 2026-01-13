@@ -6,12 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from crewai import Agent, Crew, Process, Task
+import chromadb
+from crewai import Agent, Crew, LLM, Process, Task
 from crewai.tools import tool
-from langchain_community.vectorstores import Chroma
-from langchain_core.documents import Document
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from openai import OpenAI
 
 from .config import KnowledgeAgentSettings, get_settings
 from .ingestion import IngestedDocument, collect_documents, hash_content, normalize_namespace
@@ -19,9 +17,79 @@ from .schemas import MessagePayload
 
 
 @dataclass
+class StoredDocument:
+    page_content: str
+    metadata: Dict[str, Any]
+
+
+class OpenAIEmbedder:
+    """Lightweight embedder using the official OpenAI client."""
+
+    def __init__(self, *, model: str, api_key: str, base_url: Optional[str]) -> None:
+        self.model = model
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        if not texts:
+            return []
+        response = self.client.embeddings.create(model=self.model, input=texts)
+        return [item.embedding for item in response.data]
+
+    def embed_query(self, text: str) -> List[float]:
+        response = self.client.embeddings.create(model=self.model, input=[text])
+        return response.data[0].embedding
+
+
+class ChromaVectorStore:
+    """Minimal Chroma wrapper that stores documents plus metadata."""
+
+    def __init__(self, *, path: Path, namespace: str, embedder: OpenAIEmbedder) -> None:
+        self.embedder = embedder
+        self.client = chromadb.PersistentClient(path=str(path))
+        self.collection = self.client.get_or_create_collection(
+            name=f"{namespace}-documents",
+            metadata={"hnsw:space": "cosine"},
+        )
+
+    def add_documents(self, docs: List[StoredDocument]) -> None:
+        if not docs:
+            return
+        texts = [doc.page_content for doc in docs]
+        embeddings = self.embedder.embed_documents(texts)
+        metadatas: List[Dict[str, Any]] = []
+        ids: List[str] = []
+        for index, doc in enumerate(docs):
+            meta = dict(doc.metadata or {})
+            metadatas.append(meta)
+            base_hash = meta.get("hash") or hash_content(doc.page_content)
+            chunk_index = meta.get("chunk", index)
+            ids.append(f"{base_hash}-{chunk_index}")
+        self.collection.add(ids=ids, documents=texts, embeddings=embeddings, metadatas=metadatas)
+        if hasattr(self.client, "persist"):
+            self.client.persist()
+
+    def similarity_search_with_score(self, query: str, k: int) -> List[tuple[StoredDocument, Optional[float]]]:
+        if not query.strip():
+            return []
+        embedding = self.embedder.embed_query(query)
+        result = self.collection.query(
+            query_embeddings=[embedding],
+            n_results=k,
+            include=["documents", "distances", "metadatas"],
+        )
+        documents = (result.get("documents") or [[]])[0]
+        distances = (result.get("distances") or [[]])[0]
+        metadatas = (result.get("metadatas") or [[]])[0]
+        mapped: List[tuple[StoredDocument, Optional[float]]] = []
+        for content, metadata, distance in zip(documents, metadatas, distances):
+            mapped.append((StoredDocument(page_content=content, metadata=metadata or {}), distance))
+        return mapped
+
+
+@dataclass
 class NamespaceContext:
     name: str
-    vector_store: Chroma
+    vector_store: ChromaVectorStore
     directory: Path
     chroma_path: Path
     document_hashes: set[str]
@@ -36,7 +104,8 @@ class KnowledgeManager:
         self._namespaces: Dict[str, NamespaceContext] = {}
         self._namespaces_lock: Optional[asyncio.Lock] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=150)
+        self._chunk_size = 1200
+        self._chunk_overlap = 150
 
     def _ensure_loop(self) -> asyncio.AbstractEventLoop:
         try:
@@ -192,7 +261,7 @@ class KnowledgeManager:
         await self._get_namespace(normalised)
 
         search_tool = self._create_search_tool(normalised)
-        model = ChatOpenAI(
+        model = LLM(
             model=self.settings.openai_model,
             api_key=self.settings.openai_api_key,
             base_url=self.settings.base_url,
@@ -259,16 +328,16 @@ class KnowledgeManager:
             chroma_path = self.settings.chroma_path / namespace
             chroma_path.mkdir(parents=True, exist_ok=True)
 
-            embedder = OpenAIEmbeddings(
+            embedder = OpenAIEmbedder(
                 model=self.settings.embedding_model,
                 api_key=self.settings.openai_api_key,
                 base_url=self.settings.base_url,
             )
 
-            vector_store = Chroma(
-                collection_name=f"{namespace}-documents",
-                embedding_function=embedder,
-                persist_directory=str(chroma_path),
+            vector_store = ChromaVectorStore(
+                path=chroma_path,
+                namespace=namespace,
+                embedder=embedder,
             )
 
             context = NamespaceContext(
@@ -284,9 +353,9 @@ class KnowledgeManager:
             return context
 
     async def _add_to_vector_store(self, ctx: NamespaceContext, document: IngestedDocument) -> None:
-        chunks = self._splitter.split_text(document.content)
+        chunks = self._split_text(document.content)
         docs = [
-            Document(
+            StoredDocument(
                 page_content=chunk,
                 metadata={
                     **document.metadata,
@@ -298,7 +367,6 @@ class KnowledgeManager:
             for index, chunk in enumerate(chunks)
         ]
         await asyncio.to_thread(ctx.vector_store.add_documents, docs)
-        await asyncio.to_thread(ctx.vector_store.persist)
 
     @staticmethod
     def _distance_to_score(distance: Optional[float]) -> Optional[float]:
@@ -308,6 +376,17 @@ class KnowledgeManager:
             return round(1.0 / (1.0 + float(distance)), 4)
         except (TypeError, ValueError):
             return None
+
+    def _split_text(self, content: str) -> List[str]:
+        text = (content or "").strip()
+        if not text:
+            return []
+        step = max(self._chunk_size - self._chunk_overlap, 1)
+        chunks: List[str] = []
+        for start in range(0, len(text), step):
+            end = min(start + self._chunk_size, len(text))
+            chunks.append(text[start:end])
+        return chunks
 
     def _write_document(self, directory: Path, document: IngestedDocument) -> tuple[Optional[Path], Optional[str]]:
         filename = f"{document.slug}-{document.hash[:12]}.md"
