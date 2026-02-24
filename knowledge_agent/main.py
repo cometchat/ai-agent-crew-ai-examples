@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 _env_path = Path(__file__).parent / ".env"
 load_dotenv(_env_path)
 
+from crewai.types.streaming import CrewStreamingOutput, StreamChunk, StreamChunkType
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -77,14 +78,8 @@ def create_app() -> FastAPI:
             return normalize_namespace(namespace)
         return None
 
-    def _chunk_text(content: str, *, size: int = 300) -> List[str]:
-        if not content:
-            return []
-        chunks: List[str] = []
-        text = content.strip()
-        for start in range(0, len(text), size):
-            chunks.append(text[start : start + size])
-        return chunks
+    def _ndjson(payload: Dict[str, object]) -> bytes:
+        return (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
 
     @app.post("/api/tools/ingest")
     async def ingest_sources(
@@ -167,34 +162,140 @@ def create_app() -> FastAPI:
         async def event_generator():
             message_id = f"msg_{uuid4().hex[:8]}"
 
-            # AG-UI style kickoff marker
-            yield (
-                json.dumps({"type": "text_start", "message_id": message_id, "thread_id": thread_id, "run_id": run_id})
-                + "\n"
-            ).encode("utf-8")
-
             try:
-                content = await manager.run_agent(namespace=namespace, messages=request.messages)
-                streamed = False
-                for chunk in _chunk_text(content, size=320):
-                    payload = {
-                        "type": "text_delta",
-                        "message_id": message_id,
-                        "content": chunk,
-                        "thread_id": thread_id,
-                        "run_id": run_id,
-                    }
-                    yield (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
-                    streamed = True
+                streaming: CrewStreamingOutput = await manager.run_agent_stream(namespace=namespace, messages=request.messages)
 
-                # Always close out the message, even if nothing was streamed
-                yield (
-                    json.dumps({"type": "text_end", "message_id": message_id, "thread_id": thread_id, "run_id": run_id})
-                    + "\n"
-                ).encode("utf-8")
-                yield (json.dumps({"type": "done", "thread_id": thread_id, "run_id": run_id}) + "\n").encode(
-                    "utf-8"
-                )
+                yield _ndjson({"type": "text_start", "message_id": message_id, "thread_id": thread_id, "run_id": run_id})
+
+                buffer = ""
+                final_answer_started = False
+                streamed_any_text = False
+                thought_markers = ["Thought:", "Action:", "Action Input:", "Observation:"]
+
+                for chunk in streaming:
+                    if not isinstance(chunk, StreamChunk):
+                        continue
+
+                    if chunk.chunk_type == StreamChunkType.TOOL_CALL and chunk.tool_call:
+                        tool_call_id = (
+                            getattr(chunk.tool_call, "tool_call_id", None)
+                            or getattr(chunk.tool_call, "id", None)
+                            or f"tool_{uuid4().hex[:8]}"
+                        )
+                        tool_name = getattr(chunk.tool_call, "tool_name", None) or getattr(chunk.tool_call, "name", None)
+
+                        if tool_name:
+                            yield _ndjson(
+                                {
+                                    "type": "tool_call_start",
+                                    "tool_call_id": tool_call_id,
+                                    "tool_name": tool_name,
+                                    "thread_id": thread_id,
+                                    "run_id": run_id,
+                                }
+                            )
+
+                        args = None
+                        if getattr(chunk.tool_call, "arguments", None):
+                            try:
+                                raw_args = chunk.tool_call.arguments
+                                args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                            except json.JSONDecodeError:
+                                args = None
+                        if args is not None:
+                            yield _ndjson(
+                                {
+                                    "type": "tool_call_args",
+                                    "tool_call_id": tool_call_id,
+                                    "tool_name": tool_name,
+                                    "args": args,
+                                    "thread_id": thread_id,
+                                    "run_id": run_id,
+                                }
+                            )
+
+                        if tool_name:
+                            yield _ndjson(
+                                {
+                                    "type": "tool_call_end",
+                                    "tool_call_id": tool_call_id,
+                                    "tool_name": tool_name,
+                                    "thread_id": thread_id,
+                                    "run_id": run_id,
+                                }
+                            )
+
+                        if getattr(chunk.tool_call, "result", None) is not None:
+                            yield _ndjson(
+                                {
+                                    "type": "tool_result",
+                                    "tool_call_id": tool_call_id,
+                                    "tool_name": tool_name,
+                                    "result": chunk.tool_call.result,
+                                    "thread_id": thread_id,
+                                    "run_id": run_id,
+                                }
+                            )
+
+                        continue
+
+                    if chunk.chunk_type == StreamChunkType.TEXT:
+                        content = chunk.content or ""
+                        if not content:
+                            continue
+                        buffer += content
+
+                        if not final_answer_started:
+                            if "Final Answer:" in buffer:
+                                final_answer_started = True
+                                after = buffer.split("Final Answer:", 1)[1].lstrip()
+                                if after:
+                                    yield _ndjson(
+                                        {
+                                            "type": "text_delta",
+                                            "message_id": message_id,
+                                            "content": after,
+                                            "thread_id": thread_id,
+                                            "run_id": run_id,
+                                        }
+                                    )
+                                    streamed_any_text = True
+                                buffer = ""
+                            elif any(marker in buffer for marker in thought_markers):
+                                buffer = ""
+                        else:
+                            if any(marker in content for marker in thought_markers):
+                                final_answer_started = False
+                                break
+                            yield _ndjson(
+                                {
+                                    "type": "text_delta",
+                                    "message_id": message_id,
+                                    "content": content,
+                                    "thread_id": thread_id,
+                                    "run_id": run_id,
+                                }
+                            )
+                            streamed_any_text = True
+
+                if not streamed_any_text:
+                    fallback = getattr(streaming, "result", None)
+                    if isinstance(fallback, str) and "Final Answer:" in fallback:
+                        fallback = fallback.split("Final Answer:", 1)[1].lstrip()
+                    final_text = fallback or buffer.strip()
+                    if final_text:
+                        yield _ndjson(
+                            {
+                                "type": "text_delta",
+                                "message_id": message_id,
+                                "content": final_text,
+                                "thread_id": thread_id,
+                                "run_id": run_id,
+                            }
+                        )
+
+                yield _ndjson({"type": "text_end", "message_id": message_id, "thread_id": thread_id, "run_id": run_id})
+                yield _ndjson({"type": "done", "thread_id": thread_id, "run_id": run_id})
             except Exception as exc:
                 error_payload = {
                     "type": "error",
@@ -203,11 +304,11 @@ def create_app() -> FastAPI:
                     "thread_id": thread_id,
                     "run_id": run_id,
                 }
-                yield (json.dumps(error_payload, ensure_ascii=False) + "\n").encode("utf-8")
+                yield _ndjson(error_payload)
 
         return StreamingResponse(
             event_generator(),
-            media_type="text/event-stream",
+            media_type="application/x-ndjson",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
 

@@ -74,8 +74,9 @@ curl -N http://localhost:8000/stream \
       }'
 ```
 
-Streaming format (AG-UI compatible):
-- `text_start` (first) -> `text_delta` chunks -> `text_end` -> `done`
+Streaming format (NDJSON):
+- `text_start` -> `text_delta` chunks -> `text_end` -> `done`
+- Tool events: `tool_call_start`, `tool_call_args`, `tool_call_end`, `tool_result`
 - Payloads include `message_id`, `thread_id`, `run_id`, and `content` for deltas.
 
 ## Product Hunt Agent
@@ -102,8 +103,8 @@ curl -N http://localhost:8001/stream \
       }'
 ```
 
-Streaming format matches the knowledge agent (`text_start` -> `text_delta` -> `text_end` -> `done` with message/run/thread IDs).
+Streaming format matches the knowledge agent (`text_start` -> `text_delta` -> `text_end` -> `done` with tool call events and message/run/thread IDs).
 
-## CometChat Notes
+## Streaming Notes
 
-Both `/stream` routes emit newline-delimited JSON with `thread_id`, `run_id`, `type`, and `content`. Tool call events are simplified to text deltas, but the format stays compatible with CometChat AG-UI adapters for quick demos.
+Both `/stream` routes emit newline-delimited JSON (`application/x-ndjson`) with `thread_id`, `run_id`, `type`, and `content`. Tool call events are emitted when the CrewAI agent invokes tools.

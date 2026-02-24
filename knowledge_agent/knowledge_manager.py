@@ -253,7 +253,7 @@ class KnowledgeManager:
             "results": mapped,
         }
 
-    async def create_crew(self, *, namespace: Optional[str]) -> Crew:
+    async def create_crew(self, *, namespace: Optional[str], stream: bool = False) -> Crew:
         """Build a CrewAI crew with a search tool bound to the namespace."""
 
         self._ensure_loop()
@@ -276,6 +276,7 @@ class KnowledgeManager:
             llm=model,
             allow_delegation=False,
             verbose=False,
+            memory=False,
         )
 
         task = Task(
@@ -294,6 +295,7 @@ class KnowledgeManager:
             tasks=[task],
             process=Process.sequential,
             verbose=False,
+            stream=stream,
         )
 
     async def run_agent(
@@ -304,7 +306,7 @@ class KnowledgeManager:
     ) -> str:
         """Execute the CrewAI agent against the provided conversation."""
 
-        crew = await self.create_crew(namespace=namespace)
+        crew = await self.create_crew(namespace=namespace, stream=False)
         conversation = self._format_conversation(messages)
         latest = messages[-1].content if messages else ""
 
@@ -313,6 +315,24 @@ class KnowledgeManager:
             inputs={"conversation": conversation, "question": latest},
         )
         return self._stringify_result(result)
+
+    async def run_agent_stream(
+        self,
+        *,
+        namespace: Optional[str],
+        messages: Sequence[MessagePayload],
+    ):
+        """Execute the CrewAI agent and return a streaming output."""
+
+        crew = await self.create_crew(namespace=namespace, stream=True)
+        conversation = self._format_conversation(messages)
+        latest = messages[-1].content if messages else ""
+
+        streaming = await asyncio.to_thread(
+            crew.kickoff,
+            inputs={"conversation": conversation, "question": latest},
+        )
+        return streaming
 
     async def _get_namespace(self, namespace: str) -> NamespaceContext:
         self._ensure_loop()

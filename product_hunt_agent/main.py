@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from typing import Dict, List, Optional
 from uuid import uuid4
@@ -13,6 +14,7 @@ _env_path = Path(__file__).resolve().parent / ".env"
 load_dotenv(_env_path)
 load_dotenv()  # Also try .env in cwd
 
+from crewai.types.streaming import CrewStreamingOutput, StreamChunk, StreamChunkType
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -60,11 +62,116 @@ def create_app() -> FastAPI:
                     continue
         return str(result)
 
-    def _chunk_text(content: str, *, size: int = 320) -> List[str]:
-        if not content:
-            return []
-        content = content.strip()
-        return [content[i : i + size] for i in range(0, len(content), size)]
+    def _detect_ranking_intent(text: str) -> bool:
+        if not text:
+            return False
+        advice_phrases = [
+            "best time",
+            "best day",
+            "best hour",
+            "best practices",
+            "best strategy",
+            "best way",
+            "how to launch",
+            "launch strategy",
+            "launch plan",
+        ]
+        if any(phrase in text for phrase in advice_phrases):
+            return False
+        ranking_keywords = [
+            "top",
+            "trending",
+            "leaderboard",
+            "rank",
+            "ranking",
+            "highest",
+            "best",
+            "most upvoted",
+            "most voted",
+            "product of the day",
+        ]
+        context_words = ["product hunt", "product", "post", "launch", "votes", "upvotes", "score"]
+        if not any(word in text for word in context_words):
+            return False
+        return any(keyword in text for keyword in ranking_keywords)
+
+    def _extract_limit_hint(text: str) -> Optional[int]:
+        match = re.search(r"(?:top|first|no\\.?|number|#)\\s*(\\d{1,2})", text)
+        if not match:
+            match = re.search(r"\\b(\\d{1,2})\\s+(?:top|best|trending|ranked|ranking|products?|posts?)\\b", text)
+        if match:
+            value = int(match.group(1))
+            return max(1, min(10, value))
+
+        singleton_patterns = [
+            r"\\bhighest\\b",
+            r"\\btop\\s+spot\\b",
+            r"\\b#\\s*1\\b",
+            r"\\bno\\.?\\s*1\\b",
+            r"\\bnumber\\s+1\\b",
+            r"\\bproduct\\s+of\\s+the\\s+day\\b",
+            r"\\bwinner\\b",
+        ]
+        if any(re.search(pattern, text) for pattern in singleton_patterns):
+            return 1
+        return None
+
+    def _extract_timeframe_hint(text: str) -> Optional[str]:
+        phrases = [
+            "today",
+            "yesterday",
+            "this week",
+            "last week",
+            "this month",
+            "last month",
+        ]
+        for phrase in phrases:
+            if phrase in text:
+                return phrase
+        match = re.search(r"(?:past|last)\\s+\\d{1,2}\\s+days?", text)
+        if match:
+            return match.group(0)
+        match = re.search(r"(\\d{4}-\\d{2}-\\d{2})", text)
+        if match:
+            return match.group(1)
+        match = re.search(r"from[:=]\\s*\\d{4}-\\d{2}-\\d{2}.*to[:=]\\s*\\d{4}-\\d{2}-\\d{2}", text)
+        if match:
+            return match.group(0)
+        return None
+
+    def _extract_timezone_hint(text: str) -> Optional[str]:
+        match = re.search(r"\\b([A-Za-z]+/[A-Za-z_]+)\\b", text)
+        return match.group(1) if match else None
+
+    def _build_intent_hint(question: str) -> str:
+        if not question:
+            return "none"
+        lower = question.lower()
+        hints: List[str] = []
+        ranking_intent = _detect_ranking_intent(lower)
+        search_intent = any(keyword in lower for keyword in ["search", "find", "look up", "lookup"])
+
+        if ranking_intent:
+            hints.append("Intent: rankings.")
+            limit_hint = _extract_limit_hint(lower)
+            if limit_hint:
+                hints.append(f"Limit: {limit_hint}.")
+
+        if search_intent:
+            hints.append("Intent: search.")
+
+        timeframe_hint = _extract_timeframe_hint(lower)
+        if timeframe_hint:
+            hints.append(f"Timeframe: {timeframe_hint}.")
+
+        timezone_hint = _extract_timezone_hint(question)
+        if timezone_hint:
+            hints.append(f"Timezone: {timezone_hint}.")
+
+        return " ".join(hints) if hints else "none"
+
+    def _ndjson(payload: Dict[str, object]) -> bytes:
+        return (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
 
     @app.get("/healthz")
     async def healthcheck() -> dict:
@@ -133,13 +240,14 @@ def create_app() -> FastAPI:
         if not messages:
             raise HTTPException(status_code=400, detail="Provide message or messages with textual content.")
 
-        crew = create_product_hunt_crew(cfg)
+        crew = create_product_hunt_crew(cfg, stream=False)
         conversation = _format_conversation(messages)
         latest = messages[-1].content
+        intent_hint = _build_intent_hint(latest)
 
         result = await asyncio.to_thread(
             crew.kickoff,
-            inputs={"conversation": conversation, "question": latest},
+            inputs={"conversation": conversation, "question": latest, "intent_hint": intent_hint},
         )
         return {"content": _stringify_result(result)}
 
@@ -157,39 +265,148 @@ def create_app() -> FastAPI:
         async def event_generator():
             message_id = f"msg_{uuid4().hex[:8]}"
 
-            # AG-UI style kickoff marker
-            yield (
-                json.dumps({"type": "text_start", "message_id": message_id, "thread_id": thread_id, "run_id": run_id})
-                + "\n"
-            ).encode("utf-8")
-
             try:
-                crew = create_product_hunt_crew(cfg)
+                crew = create_product_hunt_crew(cfg, stream=True)
                 conversation = _format_conversation(request.messages)
                 latest = request.messages[-1].content
+                intent_hint = _build_intent_hint(latest)
 
-                result = await asyncio.to_thread(
+                streaming: CrewStreamingOutput = await asyncio.to_thread(
                     crew.kickoff,
-                    inputs={"conversation": conversation, "question": latest},
+                    inputs={"conversation": conversation, "question": latest, "intent_hint": intent_hint},
                 )
-                content = _stringify_result(result)
 
-                streamed = False
-                for chunk in _chunk_text(content, size=320):
-                    payload = {
-                        "type": "text_delta",
-                        "message_id": message_id,
-                        "content": chunk,
-                        "thread_id": thread_id,
-                        "run_id": run_id,
-                    }
-                    yield (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
-                    streamed = True
-                yield (
-                    json.dumps({"type": "text_end", "message_id": message_id, "thread_id": thread_id, "run_id": run_id})
-                    + "\n"
-                ).encode("utf-8")
-                yield (json.dumps({"type": "done", "thread_id": thread_id, "run_id": run_id}) + "\n").encode("utf-8")
+                yield _ndjson({"type": "text_start", "message_id": message_id, "thread_id": thread_id, "run_id": run_id})
+
+                buffer = ""
+                final_answer_started = False
+                streamed_any_text = False
+                thought_markers = ["Thought:", "Action:", "Action Input:", "Observation:"]
+
+                for chunk in streaming:
+                    if not isinstance(chunk, StreamChunk):
+                        continue
+
+                    if chunk.chunk_type == StreamChunkType.TOOL_CALL and chunk.tool_call:
+                        tool_call_id = (
+                            getattr(chunk.tool_call, "tool_call_id", None)
+                            or getattr(chunk.tool_call, "id", None)
+                            or f"tool_{uuid4().hex[:8]}"
+                        )
+                        tool_name = getattr(chunk.tool_call, "tool_name", None) or getattr(chunk.tool_call, "name", None)
+
+                        if tool_name:
+                            yield _ndjson(
+                                {
+                                    "type": "tool_call_start",
+                                    "tool_call_id": tool_call_id,
+                                    "tool_name": tool_name,
+                                    "thread_id": thread_id,
+                                    "run_id": run_id,
+                                }
+                            )
+
+                        args = None
+                        if getattr(chunk.tool_call, "arguments", None):
+                            try:
+                                raw_args = chunk.tool_call.arguments
+                                args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                            except json.JSONDecodeError:
+                                args = None
+                        if args is not None:
+                            yield _ndjson(
+                                {
+                                    "type": "tool_call_args",
+                                    "tool_call_id": tool_call_id,
+                                    "tool_name": tool_name,
+                                    "args": args,
+                                    "thread_id": thread_id,
+                                    "run_id": run_id,
+                                }
+                            )
+
+                        if tool_name:
+                            yield _ndjson(
+                                {
+                                    "type": "tool_call_end",
+                                    "tool_call_id": tool_call_id,
+                                    "tool_name": tool_name,
+                                    "thread_id": thread_id,
+                                    "run_id": run_id,
+                                }
+                            )
+
+                        if getattr(chunk.tool_call, "result", None) is not None:
+                            yield _ndjson(
+                                {
+                                    "type": "tool_result",
+                                    "tool_call_id": tool_call_id,
+                                    "tool_name": tool_name,
+                                    "result": chunk.tool_call.result,
+                                    "thread_id": thread_id,
+                                    "run_id": run_id,
+                                }
+                            )
+
+                        continue
+
+                    if chunk.chunk_type == StreamChunkType.TEXT:
+                        content = chunk.content or ""
+                        if not content:
+                            continue
+                        buffer += content
+
+                        if not final_answer_started:
+                            if "Final Answer:" in buffer:
+                                final_answer_started = True
+                                after = buffer.split("Final Answer:", 1)[1].lstrip()
+                                if after:
+                                    yield _ndjson(
+                                        {
+                                            "type": "text_delta",
+                                            "message_id": message_id,
+                                            "content": after,
+                                            "thread_id": thread_id,
+                                            "run_id": run_id,
+                                        }
+                                    )
+                                    streamed_any_text = True
+                                buffer = ""
+                            elif any(marker in buffer for marker in thought_markers):
+                                buffer = ""
+                        else:
+                            if any(marker in content for marker in thought_markers):
+                                final_answer_started = False
+                                break
+                            yield _ndjson(
+                                {
+                                    "type": "text_delta",
+                                    "message_id": message_id,
+                                    "content": content,
+                                    "thread_id": thread_id,
+                                    "run_id": run_id,
+                                }
+                            )
+                            streamed_any_text = True
+
+                if not streamed_any_text:
+                    fallback = getattr(streaming, "result", None)
+                    if isinstance(fallback, str) and "Final Answer:" in fallback:
+                        fallback = fallback.split("Final Answer:", 1)[1].lstrip()
+                    final_text = fallback or buffer.strip()
+                    if final_text:
+                        yield _ndjson(
+                            {
+                                "type": "text_delta",
+                                "message_id": message_id,
+                                "content": final_text,
+                                "thread_id": thread_id,
+                                "run_id": run_id,
+                            }
+                        )
+
+                yield _ndjson({"type": "text_end", "message_id": message_id, "thread_id": thread_id, "run_id": run_id})
+                yield _ndjson({"type": "done", "thread_id": thread_id, "run_id": run_id})
             except Exception as exc:
                 error_payload = {
                     "type": "error",
@@ -198,11 +415,11 @@ def create_app() -> FastAPI:
                     "thread_id": thread_id,
                     "run_id": run_id,
                 }
-                yield (json.dumps(error_payload, ensure_ascii=False) + "\n").encode("utf-8")
+                yield _ndjson(error_payload)
 
         return StreamingResponse(
             event_generator(),
-            media_type="text/event-stream",
+            media_type="application/x-ndjson",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
 

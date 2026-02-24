@@ -26,14 +26,16 @@ def _clamp(number: int, minimum: int, maximum: int, fallback: int) -> int:
 
 def build_system_prompt(settings: ProductHuntSettings) -> str:
     return (
-        "You are Launch Buddy, a Product Hunt assistant. Use the provided tools to look up real launch data "
-        "before replying. Always cite the source of any metrics or posts you mention. When highlighting "
-        "launches, include the name, tagline, vote count, and a link to the post. If a tool returns no data, "
-        "explain that transparently and suggest alternative timeframes or search keywords."
+        "You are Launch Buddy, a Product Hunt rankings analyst and launch strategist. "
+        "Use the provided tools to look up real launch data before replying. "
+        "When you mention rankings or metrics, cite Product Hunt as the source and include "
+        "the product name, tagline, vote count, and link. "
+        "If a tool returns no data, explain why and suggest a different timeframe or search query. "
+        "Never invent metrics or posts."
     )
 
 
-def create_product_hunt_crew(settings: ProductHuntSettings) -> Crew:
+def create_product_hunt_crew(settings: ProductHuntSettings, *, stream: bool = False) -> Crew:
     model = LLM(model=settings.openai_model, api_key=settings.openai_api_key, base_url=settings.base_url, temperature=0.6)
 
     @tool("getTopProducts")
@@ -67,7 +69,7 @@ def create_product_hunt_crew(settings: ProductHuntSettings) -> Crew:
         tz: str | None = None,
         limit: int = 3,
     ) -> Dict[str, Any]:
-        """Get top Product Hunt products for a specific timeframe like 'today', 'yesterday', 'last_week', or 'last_month'."""
+        """Get top Product Hunt products for a specific timeframe like 'today', 'yesterday', 'last_week', or 'last_month'. Use limit=1 for a single top result."""
         safe_limit = _clamp(limit, 1, 10, 3)
         posts = asyncio.run(
             get_top_products_by_timeframe(
@@ -126,9 +128,16 @@ def create_product_hunt_crew(settings: ProductHuntSettings) -> Crew:
 
     agent = Agent(
         name="ProductHuntAgent",
-        role="Launch Buddy",
-        goal="Help founders and marketers explore Product Hunt launches with live data.",
-        backstory="A pragmatic assistant that checks real Product Hunt endpoints before answering.",
+        role="Product Hunt rankings analyst and launch strategist for early-stage SaaS/AI products",
+        goal=(
+            "Deliver accurate, actionable answers grounded in live Product Hunt data. "
+            "When asked for rankings, return the correct top results with vote counts and links. "
+            "When asked for launch advice, provide concise, practical guidance."
+        ),
+        backstory=(
+            "You analyze Product Hunt leaderboards daily and advise founders on launch strategy. "
+            "You value evidence over hype, rely on tools for data, and are transparent when data is missing."
+        ),
         tools=[
             tool_get_top_products,
             tool_get_top_products_this_week,
@@ -139,15 +148,31 @@ def create_product_hunt_crew(settings: ProductHuntSettings) -> Crew:
         llm=model,
         allow_delegation=False,
         verbose=False,
+        memory=False,
     )
 
     task = Task(
         description=(
-            "Use the available Product Hunt tools to gather data before answering.\n"
-            "Conversation so far:\n{conversation}\n\nLatest question: {question}\n"
-            "Include links and vote counts where possible. If data is missing, be transparent and suggest alternatives."
+            "Answer the user's Product Hunt question using available tools when data is required.\n"
+            "Inputs:\n"
+            "- Conversation: {conversation}\n"
+            "- Latest question: {question}\n"
+            "- Intent hint (may be empty): {intent_hint}\n"
+            "Process:\n"
+            "1. Decide if the user needs rankings, search results, or launch advice.\n"
+            "2. For rankings, call the correct tool and apply any timeframe or limit hints.\n"
+            "3. If the question asks for a single top result (highest/#1), use limit=1.\n"
+            "4. Use tool output verbatim for names, taglines, votes, and links; do not invent data.\n"
+            "5. If data is missing (e.g., no API token), explain and suggest alternatives.\n"
+            "6. Do not reveal internal reasoning or tool execution steps.\n"
         ),
-        expected_output="Helpful answer that cites Product Hunt data or clearly states when no data is available.",
+        expected_output=(
+            "Markdown response with a single, clear purpose.\n"
+            "If rankings: 1-sentence summary + bullet list of results (Name — Tagline — Votes — Link) + timeframe notes.\n"
+            "If search: 1-sentence summary + bullet list of results (Name — Tagline — Votes — Link).\n"
+            "If advice: 3-6 bullets of actionable guidance.\n"
+            "Always mention Product Hunt as the data source when metrics are included."
+        ),
         agent=agent,
     )
 
@@ -156,6 +181,7 @@ def create_product_hunt_crew(settings: ProductHuntSettings) -> Crew:
         tasks=[task],
         process=Process.sequential,
         verbose=False,
+        stream=stream,
     )
 
 
