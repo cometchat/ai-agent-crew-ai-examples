@@ -170,6 +170,31 @@ def create_app() -> FastAPI:
 
         return " ".join(hints) if hints else "none"
 
+    def _is_greeting(text: str) -> bool:
+        if not text:
+            return False
+        cleaned = re.sub(r"[^\w\s]", " ", text.lower()).strip()
+        if not cleaned:
+            return False
+        tokens = [token for token in cleaned.split() if token]
+        greetings = {
+            "hi",
+            "hello",
+            "hey",
+            "hiya",
+            "yo",
+            "sup",
+            "morning",
+            "afternoon",
+            "evening",
+            "greetings",
+            "howdy",
+        }
+        fillers = {"there", "everyone", "team", "folks", "friend", "please"}
+        if not any(token in greetings for token in tokens):
+            return False
+        return all(token in greetings or token in fillers for token in tokens)
+
     def _ndjson(payload: Dict[str, object]) -> bytes:
         return (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
 
@@ -240,9 +265,12 @@ def create_app() -> FastAPI:
         if not messages:
             raise HTTPException(status_code=400, detail="Provide message or messages with textual content.")
 
+        latest = messages[-1].content
+        if _is_greeting(latest):
+            return {"content": "Hi! How can I help with Product Hunt today?"}
+
         crew = create_product_hunt_crew(cfg, stream=False)
         conversation = _format_conversation(messages)
-        latest = messages[-1].content
         intent_hint = _build_intent_hint(latest)
 
         result = await asyncio.to_thread(
@@ -266,9 +294,28 @@ def create_app() -> FastAPI:
             message_id = f"msg_{uuid4().hex[:8]}"
 
             try:
+                latest = request.messages[-1].content
+                if _is_greeting(latest):
+                    yield _ndjson(
+                        {"type": "text_start", "message_id": message_id, "thread_id": thread_id, "run_id": run_id}
+                    )
+                    yield _ndjson(
+                        {
+                            "type": "text_delta",
+                            "message_id": message_id,
+                            "content": "Hi! How can I help with Product Hunt today?",
+                            "thread_id": thread_id,
+                            "run_id": run_id,
+                        }
+                    )
+                    yield _ndjson(
+                        {"type": "text_end", "message_id": message_id, "thread_id": thread_id, "run_id": run_id}
+                    )
+                    yield _ndjson({"type": "done", "thread_id": thread_id, "run_id": run_id})
+                    return
+
                 crew = create_product_hunt_crew(cfg, stream=True)
                 conversation = _format_conversation(request.messages)
-                latest = request.messages[-1].content
                 intent_hint = _build_intent_hint(latest)
 
                 streaming: CrewStreamingOutput = await asyncio.to_thread(
