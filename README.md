@@ -1,8 +1,8 @@
 # CrewAI Agent Examples
 
-Knowledge-base and Product Hunt agents implemented with [CrewAI](https://docs.crewai.com/) and FastAPI. The services mirror the Agno and Vercel agent examples but use CrewAI crews plus simple SSE streams that work with CometChat or any SSE client.
+Knowledge-base and Product Hunt agents implemented with [CrewAI](https://docs.crewai.com/) and FastAPI. Both services expose NDJSON streaming APIs and surface tool calls in the stream, matching the behavior of the LangGraph examples while staying in CrewAI format.
 
-- `knowledge_agent` - ingest docs, semantic search with Chroma, CrewAI-backed answers, and a CometChat-style `/stream`.
+- `knowledge_agent` - ingest docs, semantic search with Chroma, CrewAI-backed answers, and a streaming `/stream`.
 - `product_hunt_agent` - Product Hunt launch assistant with GraphQL, Algolia search tools, and celebratory confetti payloads.
 
 ## Prerequisites
@@ -44,7 +44,7 @@ Key endpoints:
 - `POST /api/tools/ingest` - ingest text/markdown/URLs/uploads into a namespace (defaults to `default`).
 - `POST /api/tools/searchDocs` - semantic search over the namespace (Chroma + OpenAI embeddings).
 - `POST /api/agents/knowledge/generate` - non-streaming answer via a CrewAI agent.
-- `POST /stream` - newline-delimited SSE (`text_delta`, `text_done`, `done`) compatible with CometChat BYOA.
+- `POST /stream` - NDJSON stream with text + tool events.
 
 Example ingestion:
 
@@ -79,6 +79,9 @@ Streaming format (NDJSON):
 - Tool events: `tool_call_start`, `tool_call_args`, `tool_call_end`, `tool_result`
 - Payloads include `message_id`, `thread_id`, `run_id`, and `content` for deltas.
 
+Greeting behavior:
+- If the user says “hello” (or equivalent), the agent responds with a greeting and skips tool calls.
+
 ## Product Hunt Agent
 
 ```bash
@@ -89,7 +92,7 @@ Key endpoints:
 - `GET /api/top`, `/api/top-week`, `/api/top-range` - Product Hunt GraphQL lookups.
 - `GET /api/search` - Product Hunt Algolia search.
 - `POST /api/chat` - non-streaming chat with the CrewAI agent and tool calls.
-- `POST /stream` - SSE stream (`text_delta`, `text_done`, `done`) chunked from the agent response.
+- `POST /stream` - NDJSON stream with text + tool events.
 
 Streaming example:
 
@@ -105,6 +108,9 @@ curl -N http://localhost:8001/stream \
 
 Streaming format matches the knowledge agent (`text_start` -> `text_delta` -> `text_end` -> `done` with tool call events and message/run/thread IDs).
 
+Greeting behavior:
+- If the user says “hello” (or equivalent), the agent responds with a greeting and skips tool calls.
+
 ## Streaming Notes
 
-Both `/stream` routes emit newline-delimited JSON (`application/x-ndjson`) with `thread_id`, `run_id`, `type`, and `content`. Tool call events are emitted when the CrewAI agent invokes tools.
+Both `/stream` routes emit newline-delimited JSON (`application/x-ndjson`) with `thread_id`, `run_id`, `type`, and `content`. Tool call events are emitted when the CrewAI agent invokes tools, and final text is filtered to avoid leaking internal reasoning.
